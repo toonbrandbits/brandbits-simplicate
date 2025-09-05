@@ -186,6 +186,11 @@ const TimeTracking: React.FC = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [isEditDialogOpen, setIsEditDialogOpen] = useState(false);
 
+  /** Budget calculation state */
+  const [budgetCalculations, setBudgetCalculations] = useState<{
+    [key: string]: { workedHours: number; plannedHours: number; isLoading: boolean }
+  }>({});
+
   /** Create form state */
   const [selectedDate, setSelectedDate] = useState<Date | null>(null);
   const [selectedCompanyId, setSelectedCompanyId] = useState<string>('');
@@ -366,6 +371,107 @@ const TimeTracking: React.FC = () => {
       return total;
     }, 0);
   }, [timeEntries, selectedEmployeeId, services]);
+
+  /** Calculate planned hours for a specific project - includes ALL entries, not just current week */
+  const calculatePlannedHours = useMemo(() => {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0); // Start of today
+    
+    return async (companyId: number, projectId: number) => {
+      try {
+        // Fetch ALL time entries for this project by using a wide date range
+        const startDate = new Date('2020-01-01'); // Very early date
+        const endDate = new Date('2030-12-31'); // Very far future date
+        
+        const response = await brain.list_time_entries({ 
+          start_date: toISODate(startDate),
+          end_date: toISODate(endDate)
+        });
+        const data = await response.json();
+        const allEntries = data.time_entries || [];
+        
+        // Filter for this specific project and future dates
+        const relevantEntries = allEntries.filter((entry: TimeEntryResponse) => {
+          const entryDate = new Date(entry.date);
+          entryDate.setHours(0, 0, 0, 0);
+          
+          return entry.company_id === companyId && 
+                 entry.project_id === projectId &&
+                 entryDate > today; // Future dates only
+        });
+        
+        return relevantEntries.reduce((total: number, entry: TimeEntryResponse) => total + (entry.hours_worked || 0), 0);
+      } catch (error) {
+        console.error('Error calculating planned hours:', error);
+        return 0;
+      }
+    };
+  }, []);
+
+  /** Calculate worked hours for a specific project - includes ALL entries, not just current week */
+  const calculateWorkedHours = useMemo(() => {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0); // Start of today
+    
+    return async (companyId: number, projectId: number) => {
+      try {
+        // Fetch ALL time entries for this project by using a wide date range
+        const startDate = new Date('2020-01-01'); // Very early date
+        const endDate = new Date('2030-12-31'); // Very far future date
+        
+        const response = await brain.list_time_entries({ 
+          start_date: toISODate(startDate),
+          end_date: toISODate(endDate)
+        });
+        const data = await response.json();
+        const allEntries = data.time_entries || [];
+        
+        // Filter for this specific project and past/today dates
+        const relevantEntries = allEntries.filter((entry: TimeEntryResponse) => {
+          const entryDate = new Date(entry.date);
+          entryDate.setHours(0, 0, 0, 0);
+          
+          return entry.company_id === companyId && 
+                 entry.project_id === projectId && 
+                 entryDate <= today; // Today and past dates only
+        });
+        
+        return relevantEntries.reduce((total: number, entry: TimeEntryResponse) => total + (entry.hours_worked || 0), 0);
+      } catch (error) {
+        console.error('Error calculating worked hours:', error);
+        return 0;
+      }
+    };
+  }, []);
+
+  /** Load budget calculations for a specific project */
+  const loadBudgetCalculations = async (companyId: number, projectId: number) => {
+    const key = `${companyId}-${projectId}`;
+    
+    // Set loading state
+    setBudgetCalculations(prev => ({
+      ...prev,
+      [key]: { workedHours: 0, plannedHours: 0, isLoading: true }
+    }));
+
+    try {
+      const [workedHours, plannedHours] = await Promise.all([
+        calculateWorkedHours(companyId, projectId),
+        calculatePlannedHours(companyId, projectId)
+      ]);
+
+      setBudgetCalculations(prev => ({
+        ...prev,
+        [key]: { workedHours, plannedHours, isLoading: false }
+      }));
+    } catch (error) {
+      console.error('Error loading budget calculations:', error);
+      setBudgetCalculations(prev => ({
+        ...prev,
+        [key]: { workedHours: 0, plannedHours: 0, isLoading: false }
+      }));
+    }
+  };
 
   /** Format hours to HH:MM format */
   const formatHoursToDisplay = (hours: number) => {
@@ -1150,16 +1256,16 @@ const TimeTracking: React.FC = () => {
   const nowTop = ((nowMinutes - START_HOUR * 60) / 60) * PX_PER_HOUR;
 
   return (
-    <div className="container mx-auto max-w-[100vw]">
+    <div className="container mx-auto max-w-[100vw] px-4">
 
-      {/* Main Layout: 80% left, 20% right */}
-      <div className="flex gap-6">
-        {/* Left side: Time tracking grid (80%) */}
-        <div className="flex-1" style={{ width: '80%' }}>
+      {/* Mobile Layout: Stacked vertically on mobile, side-by-side on desktop */}
+      <div className="flex flex-col lg:flex-row gap-6">
+        {/* Left side: Time tracking grid - Full width on mobile, 80% on desktop */}
+        <div className="flex-1 lg:w-4/5">
           {/* Title above calendar */}
           <div className="mb-4">
-            <h1 className="text-3xl font-bold text-gray-900">Urenregistratie</h1>
-            <p className="text-gray-600 mt-1">Weekoverzicht (7 dagen) – venster 07:00–19:00</p>
+            <h1 className="text-2xl lg:text-3xl font-bold text-gray-900">Urenregistratie</h1>
+            <p className="text-sm lg:text-base text-gray-600 mt-1">Weekoverzicht (7 dagen) – venster 07:00–19:00</p>
           </div>
           
           {/* Week grid with hour gutter */}
@@ -1174,7 +1280,7 @@ const TimeTracking: React.FC = () => {
                   const total = calDay?.totalHours || 0;
                   const isToday = iso === toISODate(new Date());
                   return (
-                    <div key={iso} className={`p-3 border-b bg-gray-50 text-center ${isToday ? 'bg-orange-50' : ''}`}>
+                    <div key={iso} className={`p-2 border-b border-r bg-gray-50 text-center flex items-center justify-center ${isToday ? 'bg-orange-50' : ''}`}>
                       <div className={`inline-flex items-center justify-center px-3 py-1 rounded-full text-sm font-medium ${
                         isToday 
                           ? 'bg-orange-500 text-white' 
@@ -1189,7 +1295,7 @@ const TimeTracking: React.FC = () => {
               </div>
 
               {/* Time rows (06–22) - Scrollable container */}
-              <div className="overflow-auto" style={{ height: '70vh', maxHeight: '800px' }}>
+              <div className="overflow-auto" style={{ height: '60vh', maxHeight: '600px' }}>
                 <div className="relative" style={{ height: DAY_HEIGHT, minWidth: '100%' }}>
                   <div className="absolute inset-0 grid" style={{ gridTemplateColumns: GRID_COLS }}>
                     {/* Hour gutter (06–22) */}
@@ -1407,7 +1513,7 @@ const TimeTracking: React.FC = () => {
               <div className="grid" style={{ gridTemplateColumns: GRID_COLS }}>
                 <div className="border-t bg-gray-50" />
                 {dailyTotals.map((dayTotal) => (
-                  <div key={toISODate(dayTotal.date)} className="border-t bg-gray-50 p-2 text-center">
+                  <div key={toISODate(dayTotal.date)} className="border-t border-r bg-gray-50 p-2 text-center">
                     <div className="text-sm font-medium text-red-600">
                       {dayTotal.formattedHours}
                     </div>
@@ -1418,16 +1524,61 @@ const TimeTracking: React.FC = () => {
           </Card>
         </div>
 
-        {/* Right side: Available hours summary (20%) */}
-        <div className="w-80 flex-shrink-0 flex flex-col">
+        {/* Right side: Controls and info - Full width on mobile, 20% on desktop */}
+        <div className="w-full lg:w-1/5 flex-shrink-0 flex flex-col">
+          {/* Mobile: Calendar at top */}
+          <div className="lg:hidden mb-4">
+            <Card className="mb-4">
+              <CardContent className="p-4">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-lg font-semibold">Kalender</h3>
+                  <Button variant="outline" size="sm" onClick={() => setShowCalendar(!showCalendar)}>
+                    <CalendarIcon className="h-4 w-4 mr-2" />
+                    {showCalendar ? 'Verberg' : 'Toon'}
+                  </Button>
+                </div>
+                {showCalendar && (
+                  <Calendar
+                    mode="single"
+                    selected={weekStart}
+                    onSelect={(date) => date && handleDateSelect(date)}
+                    className="rounded-md border-0"
+                    classNames={{
+                      months: "flex flex-col sm:flex-row space-y-4 sm:space-x-4 sm:space-y-0",
+                      month: "space-y-4",
+                      caption: "flex justify-center pt-1 relative items-center",
+                      caption_label: "text-sm font-medium",
+                      nav: "space-x-1 flex items-center",
+                      nav_button: "h-7 w-7 bg-transparent p-0 opacity-50 hover:opacity-100",
+                      nav_button_previous: "absolute left-1",
+                      nav_button_next: "absolute right-1",
+                      table: "w-full border-collapse space-y-1",
+                      head_row: "flex",
+                      head_cell: "text-muted-foreground rounded-md w-8 font-normal text-[0.8rem]",
+                      row: "flex w-full mt-2 hover:bg-gray-100 rounded-md transition-colors",
+                      cell: "text-center text-sm p-0 relative [&:has([aria-selected])]:bg-accent first:[&:has([aria-selected])]:rounded-l-md last:[&:has([aria-selected])]:rounded-r-md focus-within:relative focus-within:z-20",
+                      day: "h-8 w-8 p-0 font-normal aria-selected:opacity-100 hover:bg-transparent",
+                      day_selected: "bg-primary text-primary-foreground hover:bg-primary hover:text-primary-foreground focus:bg-primary focus:text-primary-foreground",
+                      day_today: "bg-accent text-accent-foreground",
+                      day_outside: "text-muted-foreground opacity-50",
+                      day_disabled: "text-muted-foreground opacity-50",
+                      day_range_middle: "aria-selected:bg-accent aria-selected:text-accent-foreground",
+                      day_hidden: "invisible",
+                    }}
+                  />
+                )}
+              </CardContent>
+            </Card>
+          </div>
+
           {/* Week Selector */}
           <div className="mb-4 flex-shrink-0">
-            <div className="flex items-center justify-center gap-4">
+            <div className="flex items-center justify-center gap-2 lg:gap-4">
               <Button variant="outline" onClick={() => setAnchorDate(addDays(anchorDate, -7))} className="p-2">
                 <ChevronLeft className="h-4 w-4" />
               </Button>
               <div className="text-center">
-                <h2 className="text-lg font-semibold">{getMonthYearLabel(anchorDate)}</h2>
+                <h2 className="text-base lg:text-lg font-semibold">{getMonthYearLabel(anchorDate)}</h2>
                 <Badge variant="secondary" className="mt-1">
                   {getWeekLabelFormatted(anchorDate)}
                 </Badge>
@@ -1440,22 +1591,22 @@ const TimeTracking: React.FC = () => {
 
           {/* Action Buttons */}
           <div className="mb-4 flex-shrink-0">
-            <div className="flex items-center justify-center gap-2">
+            <div className="flex items-center justify-center gap-2 flex-wrap">
               <Button variant="outline" size="sm" className="p-2" onClick={cycleInfoDensity} title={`Info: ${infoDensity}`}>
                 <LayoutGrid className="h-4 w-4" />
               </Button>
-              <Button variant="outline" size="sm" onClick={goToCurrentWeek}>
+              <Button variant="outline" size="sm" onClick={goToCurrentWeek} className="text-xs lg:text-sm">
                 Huidige week
               </Button>
-              <Button variant="outline" size="sm" className="p-2" onClick={() => setShowCalendar(!showCalendar)}>
+              <Button variant="outline" size="sm" className="p-2 lg:hidden" onClick={() => setShowCalendar(!showCalendar)}>
                 <CalendarIcon className="h-4 w-4" />
               </Button>
             </div>
           </div>
 
-          {/* Small Calendar Card */}
+          {/* Desktop Calendar Card - Hidden on mobile */}
           {showCalendar && (
-            <Card className="mb-4 flex-shrink-0">
+            <Card className="mb-4 flex-shrink-0 hidden lg:block">
               <CardContent className="p-3">
                 <Calendar
                   mode="single"
@@ -1552,28 +1703,29 @@ const TimeTracking: React.FC = () => {
             </CardContent>
           </Card>
 
+          {/* Available Hours - Mobile: Collapsible at bottom, Desktop: Fixed height */}
           {availableHours.length > 0 && (
-            <Card className="flex-1 flex flex-col" style={{ height: '70vh', maxHeight: '490px' }}>
+            <Card className="flex-1 flex flex-col lg:max-h-[517px]">
               <CardHeader className="flex-shrink-0">
-                <CardTitle className="text-lg">Beschikbare uren per project</CardTitle>
+                <CardTitle className="text-base lg:text-lg">Beschikbare uren per project</CardTitle>
                 <div className="mt-3">
                   <Input
                     type="text"
                     placeholder="Zoek op bedrijf of project..."
                     value={availableHoursSearch}
                     onChange={(e) => setAvailableHoursSearch(e.target.value)}
-                    className="w-full"
+                    className="w-full text-sm"
                   />
                 </div>
               </CardHeader>
               <CardContent className="flex-1 overflow-hidden">
-                <div className="h-full overflow-y-auto space-y-3 pr-2">
+                <div className="h-full overflow-y-auto space-y-2 lg:space-y-3 pr-2">
                   {filteredAvailableHours.map((ah) => (
-                    <div key={`${ah.company_id}-${ah.project_id}`} className="p-3 border rounded-lg">
-                      <h4 className="font-medium text-sm">{ah.company_name}</h4>
-                      <p className="text-sm text-gray-600">{ah.project_name}</p>
-                      <div className="flex items-center gap-2 mt-2">
-                        <Badge variant={ah.remaining_hours > 0 || ah.unlimited_hours ? 'default' : 'destructive'}>
+                    <div key={`${ah.company_id}-${ah.project_id}`} className="p-2 lg:p-3 border rounded-lg">
+                      <h4 className="font-medium text-xs lg:text-sm">{ah.company_name}</h4>
+                      <p className="text-xs lg:text-sm text-gray-600">{ah.project_name}</p>
+                      <div className="flex items-center gap-2 mt-2 flex-wrap">
+                        <Badge variant={ah.remaining_hours > 0 || ah.unlimited_hours ? 'default' : 'destructive'} className="text-xs">
                           {ah.unlimited_hours ? '∞' : formatHoursToHM(ah.remaining_hours)} over
                         </Badge>
                         <span className="text-xs text-gray-500">
@@ -1591,7 +1743,7 @@ const TimeTracking: React.FC = () => {
 
       {/* Create dialog */}
       <Dialog open={isEntryDialogOpen} onOpenChange={setIsEntryDialogOpen}>
-        <DialogContent className="sm:max-w-md" aria-describedby={undefined}>
+        <DialogContent className="sm:max-w-md max-h-[90vh] overflow-y-auto" aria-describedby={undefined}>
           <DialogHeader>
             <DialogTitle>
               Uren toevoegen
@@ -1668,17 +1820,63 @@ const TimeTracking: React.FC = () => {
             </div>
 
             <p className="text-sm text-gray-600">Uren: <span className="font-medium">{computedHours}</span></p>
-            {selectedCompanyId && selectedProjectId && (
-              <p className="text-sm text-gray-600">
-                Resterend: {(() => {
-                  const project = availableHours.find(ah => 
-                    ah.company_id.toString() === selectedCompanyId && 
-                    ah.project_id.toString() === selectedProjectId
-                  );
-                  return project?.unlimited_hours ? '∞' : formatHoursToHM(getRemainingHours(selectedCompanyId, selectedProjectId));
-                })()}
-              </p>
-            )}
+            
+            {/* Budget Summary Section */}
+            {selectedCompanyId && selectedProjectId && (() => {
+              const project = availableHours.find(ah => 
+                ah.company_id.toString() === selectedCompanyId && 
+                ah.project_id.toString() === selectedProjectId
+              );
+              
+              if (!project) return null;
+              
+              const key = `${project.company_id}-${project.project_id}`;
+              const calculations = budgetCalculations[key] || { workedHours: 0, plannedHours: 0, isLoading: false };
+              
+              // Load calculations if not already loaded
+              if (!calculations.isLoading && calculations.workedHours === 0 && calculations.plannedHours === 0) {
+                loadBudgetCalculations(project.company_id, project.project_id);
+              }
+              
+              const budget = project.unlimited_hours ? '∞' : formatHoursToHM(project.available_hours);
+              const spent = formatHoursToHM(calculations.workedHours);
+              const planned = formatHoursToHM(calculations.plannedHours);
+              const totalUsed = calculations.workedHours + calculations.plannedHours;
+              const remaining = project.unlimited_hours ? '∞' : formatHoursToHM(project.available_hours - totalUsed);
+              const isOverBudget = !project.unlimited_hours && (project.available_hours - totalUsed) < 0;
+              
+              return (
+                <div className="bg-gray-50 rounded-lg p-4">
+                  {calculations.isLoading ? (
+                    <div className="flex justify-center items-center py-4">
+                      <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-orange-500"></div>
+                      <span className="ml-2 text-sm text-gray-600">Budget laden...</span>
+                    </div>
+                  ) : (
+                    <div className="flex justify-between text-sm">
+                      <div className="text-center">
+                        <div className="text-gray-600 text-xs">Budget</div>
+                        <div className="font-medium">{budget}</div>
+                      </div>
+                      <div className="text-center">
+                        <div className="text-gray-600 text-xs">Besteed</div>
+                        <div className="font-medium">{spent}</div>
+                      </div>
+                      <div className="text-center">
+                        <div className="text-gray-600 text-xs">Gepland</div>
+                        <div className="font-medium">{planned}</div>
+                      </div>
+                      <div className="text-center">
+                        <div className="text-gray-600 text-xs">Resterend</div>
+                        <div className={`font-medium ${isOverBudget ? 'text-red-600' : 'text-gray-900'}`}>
+                          {isOverBudget ? `-${formatHoursToHM(Math.abs(project.available_hours - totalUsed))}` : remaining}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
 
             <div className="flex gap-3 pt-4">
               <Button variant="outline" onClick={() => setIsEntryDialogOpen(false)} className="flex-1">Annuleren</Button>
@@ -1692,7 +1890,7 @@ const TimeTracking: React.FC = () => {
 
       {/* Edit dialog */}
       <Dialog open={isEditDialogOpen} onOpenChange={setIsEditDialogOpen}>
-        <DialogContent className="sm:max-w-md" aria-describedby={undefined}>
+        <DialogContent className="sm:max-w-md max-h-[90vh] overflow-y-auto" aria-describedby={undefined}>
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <Pencil className="h-5 w-5" /> Uren bewerken
@@ -1751,6 +1949,63 @@ const TimeTracking: React.FC = () => {
                 </div>
               </div>
               <p className="text-sm text-gray-600">Uren: <span className="font-medium">{editHours}</span></p>
+
+              {/* Budget Summary Section for Edit Dialog */}
+              {editingEntry && (() => {
+                const project = availableHours.find(ah => 
+                  ah.company_id === editingEntry.company_id && 
+                  ah.project_id === editingEntry.project_id
+                );
+                
+                if (!project) return null;
+                
+                const key = `${project.company_id}-${project.project_id}`;
+                const calculations = budgetCalculations[key] || { workedHours: 0, plannedHours: 0, isLoading: false };
+                
+                // Load calculations if not already loaded
+                if (!calculations.isLoading && calculations.workedHours === 0 && calculations.plannedHours === 0) {
+                  loadBudgetCalculations(project.company_id, project.project_id);
+                }
+                
+                const budget = project.unlimited_hours ? '∞' : formatHoursToHM(project.available_hours);
+                const spent = formatHoursToHM(calculations.workedHours);
+                const planned = formatHoursToHM(calculations.plannedHours);
+                const totalUsed = calculations.workedHours + calculations.plannedHours;
+                const remaining = project.unlimited_hours ? '∞' : formatHoursToHM(project.available_hours - totalUsed);
+                const isOverBudget = !project.unlimited_hours && (project.available_hours - totalUsed) < 0;
+                
+                return (
+                  <div className="bg-gray-50 rounded-lg p-4">
+                    {calculations.isLoading ? (
+                      <div className="flex justify-center items-center py-4">
+                        <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-orange-500"></div>
+                        <span className="ml-2 text-sm text-gray-600">Budget laden...</span>
+                      </div>
+                    ) : (
+                      <div className="flex justify-between text-sm">
+                        <div className="text-center">
+                          <div className="text-gray-600 text-xs">Budget</div>
+                          <div className="font-medium">{budget}</div>
+                        </div>
+                        <div className="text-center">
+                          <div className="text-gray-600 text-xs">Besteed</div>
+                          <div className="font-medium">{spent}</div>
+                        </div>
+                        <div className="text-center">
+                          <div className="text-gray-600 text-xs">Gepland</div>
+                          <div className="font-medium">{planned}</div>
+                        </div>
+                        <div className="text-center">
+                          <div className="text-gray-600 text-xs">Resterend</div>
+                          <div className={`font-medium ${isOverBudget ? 'text-red-600' : 'text-gray-900'}`}>
+                            {isOverBudget ? `-${formatHoursToHM(Math.abs(project.available_hours - totalUsed))}` : remaining}
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
 
               <div className="flex gap-3 pt-4">
                 <Button variant="destructive" onClick={handleDeleteEntry} className="flex-1">
