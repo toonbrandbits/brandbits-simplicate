@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useUserGuardContext } from 'app/auth';
 import brain from 'brain';
@@ -328,6 +328,156 @@ const TimeTracking: React.FC = () => {
     loadServices();
   }, [projects]);
 
+  /** Calculate planned hours for a specific service - includes ALL entries, not just current week */
+  const calculatePlannedHours = useCallback(async (serviceId: number) => {
+    console.log(`Calculating planned hours for service ${serviceId}`);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0); // Start of today
+    
+    try {
+      // Use a more reasonable date range - 2 years back and 2 years forward
+      const startDate = new Date();
+      startDate.setFullYear(startDate.getFullYear() - 2);
+      const endDate = new Date();
+      endDate.setFullYear(endDate.getFullYear() + 2);
+      
+      console.log(`Fetching time entries from ${toISODate(startDate)} to ${toISODate(endDate)}`);
+      const response = await brain.list_time_entries({ 
+        start_date: toISODate(startDate),
+        end_date: toISODate(endDate)
+      });
+      const data = await response.json();
+      const allEntries = data.time_entries || [];
+      console.log(`Found ${allEntries.length} total entries`);
+      
+      // Filter for this specific service and future dates
+      const relevantEntries = allEntries.filter((entry: TimeEntryResponse) => {
+        const entryDate = new Date(entry.date);
+        entryDate.setHours(0, 0, 0, 0);
+        
+        return entry.service_id === serviceId &&
+               entryDate > today; // Future dates only
+      });
+      
+      console.log(`Found ${relevantEntries.length} relevant planned entries for service ${serviceId}`);
+      const total = relevantEntries.reduce((total: number, entry: TimeEntryResponse) => total + (entry.hours_worked || 0), 0);
+      console.log(`Total planned hours: ${total}`);
+      return total;
+    } catch (error) {
+      console.error('Error calculating planned hours:', error);
+      return 0;
+    }
+  }, []);
+
+  /** Calculate worked hours for a specific service - includes ALL entries, not just current week */
+  const calculateWorkedHours = useCallback(async (serviceId: number) => {
+    console.log(`Calculating worked hours for service ${serviceId}`);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0); // Start of today
+    
+    try {
+      // Use a more reasonable date range - 2 years back and 2 years forward
+      const startDate = new Date();
+      startDate.setFullYear(startDate.getFullYear() - 2);
+      const endDate = new Date();
+      endDate.setFullYear(endDate.getFullYear() + 2);
+      
+      console.log(`Fetching time entries from ${toISODate(startDate)} to ${toISODate(endDate)}`);
+      const response = await brain.list_time_entries({ 
+        start_date: toISODate(startDate),
+        end_date: toISODate(endDate)
+      });
+      const data = await response.json();
+      const allEntries = data.time_entries || [];
+      console.log(`Found ${allEntries.length} total entries`);
+      
+      // Filter for this specific service and past/today dates
+      const relevantEntries = allEntries.filter((entry: TimeEntryResponse) => {
+        const entryDate = new Date(entry.date);
+        entryDate.setHours(0, 0, 0, 0);
+        
+        return entry.service_id === serviceId && 
+               entryDate <= today; // Today and past dates only
+      });
+      
+      console.log(`Found ${relevantEntries.length} relevant worked entries for service ${serviceId}`);
+      const total = relevantEntries.reduce((total: number, entry: TimeEntryResponse) => total + (entry.hours_worked || 0), 0);
+      console.log(`Total worked hours: ${total}`);
+      return total;
+    } catch (error) {
+      console.error('Error calculating worked hours:', error);
+      return 0;
+    }
+  }, []);
+
+  /** Load budget calculations for a specific service */
+  const loadBudgetCalculations = useCallback(async (serviceId: number) => {
+    const key = `service-${serviceId}`;
+    console.log(`Loading budget calculations for service ${serviceId}`);
+    
+    // Check if already loading to prevent multiple simultaneous calls
+    const currentState = budgetCalculations[key];
+    if (currentState?.isLoading) {
+      console.log(`Already loading calculations for service ${serviceId}, skipping`);
+      return;
+    }
+    
+    // Set loading state
+    setBudgetCalculations(prev => ({
+      ...prev,
+      [key]: { workedHours: 0, plannedHours: 0, isLoading: true }
+    }));
+
+    try {
+      console.log(`Starting calculations for service ${serviceId}`);
+      const [workedHours, plannedHours] = await Promise.all([
+        calculateWorkedHours(serviceId),
+        calculatePlannedHours(serviceId)
+      ]);
+
+      console.log(`Calculations completed for service ${serviceId}:`, { workedHours, plannedHours });
+
+      setBudgetCalculations(prev => ({
+        ...prev,
+        [key]: { workedHours, plannedHours, isLoading: false }
+      }));
+    } catch (error) {
+      console.error('Error loading budget calculations:', error);
+      setBudgetCalculations(prev => ({
+        ...prev,
+        [key]: { workedHours: 0, plannedHours: 0, isLoading: false }
+      }));
+    }
+  }, [calculateWorkedHours, calculatePlannedHours]);
+
+  /** Load budget calculations when service changes */
+  useEffect(() => {
+    if (selectedServiceId && selectedServiceId !== 'none') {
+      const serviceId = parseInt(selectedServiceId);
+      // Add a small delay to debounce rapid changes
+      const timeoutId = setTimeout(() => {
+        loadBudgetCalculations(serviceId);
+      }, 300);
+      
+      return () => clearTimeout(timeoutId);
+    }
+  }, [selectedServiceId, loadBudgetCalculations]);
+
+  /** Load budget calculations when edit service changes */
+  useEffect(() => {
+    console.log('Edit service useEffect triggered, editServiceId:', editServiceId);
+    if (editServiceId && editServiceId !== 'none') {
+      const serviceId = parseInt(editServiceId);
+      console.log('Loading budget calculations for edit service:', serviceId);
+      // Add a small delay to debounce rapid changes
+      const timeoutId = setTimeout(() => {
+        loadBudgetCalculations(serviceId);
+      }, 300);
+      
+      return () => clearTimeout(timeoutId);
+    }
+  }, [editServiceId, loadBudgetCalculations]);
+
   /** Calculate total hours for selected employee and week */
   const calculateTotalHours = useMemo(() => {
     if (selectedEmployeeId === 'own') {
@@ -372,106 +522,7 @@ const TimeTracking: React.FC = () => {
     }, 0);
   }, [timeEntries, selectedEmployeeId, services]);
 
-  /** Calculate planned hours for a specific project - includes ALL entries, not just current week */
-  const calculatePlannedHours = useMemo(() => {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0); // Start of today
-    
-    return async (companyId: number, projectId: number) => {
-      try {
-        // Fetch ALL time entries for this project by using a wide date range
-        const startDate = new Date('2020-01-01'); // Very early date
-        const endDate = new Date('2030-12-31'); // Very far future date
-        
-        const response = await brain.list_time_entries({ 
-          start_date: toISODate(startDate),
-          end_date: toISODate(endDate)
-        });
-        const data = await response.json();
-        const allEntries = data.time_entries || [];
-        
-        // Filter for this specific project and future dates
-        const relevantEntries = allEntries.filter((entry: TimeEntryResponse) => {
-          const entryDate = new Date(entry.date);
-          entryDate.setHours(0, 0, 0, 0);
-          
-          return entry.company_id === companyId && 
-                 entry.project_id === projectId &&
-                 entryDate > today; // Future dates only
-        });
-        
-        return relevantEntries.reduce((total: number, entry: TimeEntryResponse) => total + (entry.hours_worked || 0), 0);
-      } catch (error) {
-        console.error('Error calculating planned hours:', error);
-        return 0;
-      }
-    };
-  }, []);
 
-  /** Calculate worked hours for a specific project - includes ALL entries, not just current week */
-  const calculateWorkedHours = useMemo(() => {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0); // Start of today
-    
-    return async (companyId: number, projectId: number) => {
-      try {
-        // Fetch ALL time entries for this project by using a wide date range
-        const startDate = new Date('2020-01-01'); // Very early date
-        const endDate = new Date('2030-12-31'); // Very far future date
-        
-        const response = await brain.list_time_entries({ 
-          start_date: toISODate(startDate),
-          end_date: toISODate(endDate)
-        });
-        const data = await response.json();
-        const allEntries = data.time_entries || [];
-        
-        // Filter for this specific project and past/today dates
-        const relevantEntries = allEntries.filter((entry: TimeEntryResponse) => {
-          const entryDate = new Date(entry.date);
-          entryDate.setHours(0, 0, 0, 0);
-          
-          return entry.company_id === companyId && 
-                 entry.project_id === projectId && 
-                 entryDate <= today; // Today and past dates only
-        });
-        
-        return relevantEntries.reduce((total: number, entry: TimeEntryResponse) => total + (entry.hours_worked || 0), 0);
-      } catch (error) {
-        console.error('Error calculating worked hours:', error);
-        return 0;
-      }
-    };
-  }, []);
-
-  /** Load budget calculations for a specific project */
-  const loadBudgetCalculations = async (companyId: number, projectId: number) => {
-    const key = `${companyId}-${projectId}`;
-    
-    // Set loading state
-    setBudgetCalculations(prev => ({
-      ...prev,
-      [key]: { workedHours: 0, plannedHours: 0, isLoading: true }
-    }));
-
-    try {
-      const [workedHours, plannedHours] = await Promise.all([
-        calculateWorkedHours(companyId, projectId),
-        calculatePlannedHours(companyId, projectId)
-      ]);
-
-      setBudgetCalculations(prev => ({
-        ...prev,
-        [key]: { workedHours, plannedHours, isLoading: false }
-      }));
-    } catch (error) {
-      console.error('Error loading budget calculations:', error);
-      setBudgetCalculations(prev => ({
-        ...prev,
-        [key]: { workedHours: 0, plannedHours: 0, isLoading: false }
-      }));
-    }
-  };
 
   /** Format hours to HH:MM format */
   const formatHoursToDisplay = (hours: number) => {
@@ -1822,28 +1873,20 @@ const TimeTracking: React.FC = () => {
             <p className="text-sm text-gray-600">Uren: <span className="font-medium">{computedHours}</span></p>
             
             {/* Budget Summary Section */}
-            {selectedCompanyId && selectedProjectId && (() => {
-              const project = availableHours.find(ah => 
-                ah.company_id.toString() === selectedCompanyId && 
-                ah.project_id.toString() === selectedProjectId
-              );
+            {selectedServiceId && selectedServiceId !== 'none' && (() => {
+              const service = services.find(s => s.id.toString() === selectedServiceId);
               
-              if (!project) return null;
+              if (!service) return null;
               
-              const key = `${project.company_id}-${project.project_id}`;
+              const key = `service-${service.id}`;
               const calculations = budgetCalculations[key] || { workedHours: 0, plannedHours: 0, isLoading: false };
               
-              // Load calculations if not already loaded
-              if (!calculations.isLoading && calculations.workedHours === 0 && calculations.plannedHours === 0) {
-                loadBudgetCalculations(project.company_id, project.project_id);
-              }
-              
-              const budget = project.unlimited_hours ? '∞' : formatHoursToHM(project.available_hours);
+              const budget = formatHoursToHM(service.budget_hours);
               const spent = formatHoursToHM(calculations.workedHours);
               const planned = formatHoursToHM(calculations.plannedHours);
               const totalUsed = calculations.workedHours + calculations.plannedHours;
-              const remaining = project.unlimited_hours ? '∞' : formatHoursToHM(project.available_hours - totalUsed);
-              const isOverBudget = !project.unlimited_hours && (project.available_hours - totalUsed) < 0;
+              const remaining = formatHoursToHM(service.budget_hours - totalUsed);
+              const isOverBudget = (service.budget_hours - totalUsed) < 0;
               
               return (
                 <div className="bg-gray-50 rounded-lg p-4">
@@ -1869,7 +1912,7 @@ const TimeTracking: React.FC = () => {
                       <div className="text-center">
                         <div className="text-gray-600 text-xs">Resterend</div>
                         <div className={`font-medium ${isOverBudget ? 'text-red-600' : 'text-gray-900'}`}>
-                          {isOverBudget ? `-${formatHoursToHM(Math.abs(project.available_hours - totalUsed))}` : remaining}
+                          {isOverBudget ? `-${formatHoursToHM(Math.abs(service.budget_hours - totalUsed))}` : remaining}
                         </div>
                       </div>
                     </div>
@@ -1917,7 +1960,10 @@ const TimeTracking: React.FC = () => {
 
               <div>
                 <Label>Service</Label>
-                <Select value={editServiceId} onValueChange={setEditServiceId}>
+                <Select value={editServiceId} onValueChange={(value) => {
+                  console.log('Edit service changed to:', value);
+                  setEditServiceId(value);
+                }}>
                   <SelectTrigger><SelectValue placeholder="Select a service (optional)" /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="none">No service</SelectItem>
@@ -1951,28 +1997,20 @@ const TimeTracking: React.FC = () => {
               <p className="text-sm text-gray-600">Uren: <span className="font-medium">{editHours}</span></p>
 
               {/* Budget Summary Section for Edit Dialog */}
-              {editingEntry && (() => {
-                const project = availableHours.find(ah => 
-                  ah.company_id === editingEntry.company_id && 
-                  ah.project_id === editingEntry.project_id
-                );
+              {editingEntry && editServiceId && editServiceId !== 'none' && (() => {
+                const service = editServices.find(s => s.id.toString() === editServiceId);
                 
-                if (!project) return null;
+                if (!service) return null;
                 
-                const key = `${project.company_id}-${project.project_id}`;
+                const key = `service-${service.id}`;
                 const calculations = budgetCalculations[key] || { workedHours: 0, plannedHours: 0, isLoading: false };
                 
-                // Load calculations if not already loaded
-                if (!calculations.isLoading && calculations.workedHours === 0 && calculations.plannedHours === 0) {
-                  loadBudgetCalculations(project.company_id, project.project_id);
-                }
-                
-                const budget = project.unlimited_hours ? '∞' : formatHoursToHM(project.available_hours);
+                const budget = formatHoursToHM(service.budget_hours);
                 const spent = formatHoursToHM(calculations.workedHours);
                 const planned = formatHoursToHM(calculations.plannedHours);
                 const totalUsed = calculations.workedHours + calculations.plannedHours;
-                const remaining = project.unlimited_hours ? '∞' : formatHoursToHM(project.available_hours - totalUsed);
-                const isOverBudget = !project.unlimited_hours && (project.available_hours - totalUsed) < 0;
+                const remaining = formatHoursToHM(service.budget_hours - totalUsed);
+                const isOverBudget = (service.budget_hours - totalUsed) < 0;
                 
                 return (
                   <div className="bg-gray-50 rounded-lg p-4">
@@ -1998,7 +2036,7 @@ const TimeTracking: React.FC = () => {
                         <div className="text-center">
                           <div className="text-gray-600 text-xs">Resterend</div>
                           <div className={`font-medium ${isOverBudget ? 'text-red-600' : 'text-gray-900'}`}>
-                            {isOverBudget ? `-${formatHoursToHM(Math.abs(project.available_hours - totalUsed))}` : remaining}
+                            {isOverBudget ? `-${formatHoursToHM(Math.abs(service.budget_hours - totalUsed))}` : remaining}
                           </div>
                         </div>
                       </div>
