@@ -213,6 +213,7 @@ const TimeTracking: React.FC = () => {
   const [editServiceId, setEditServiceId] = useState<string>('');
   const [editServices, setEditServices] = useState<ServiceResponse[]>([]);
   const [editComment, setEditComment] = useState<string>('');
+  const [editDate, setEditDate] = useState<Date | null>(null);
   const editHours = useMemo(() => {
     const s = timeToMinutes(editStart);
     const e = timeToMinutes(editEnd);
@@ -531,6 +532,53 @@ const TimeTracking: React.FC = () => {
     return `${wholeHours}:${minutes.toString().padStart(2, '0')}`;
   };
 
+  /** Format date for day switcher display */
+  const formatDateForSwitcher = (date: Date) => {
+    return date.toLocaleDateString('nl-NL', { 
+      weekday: 'short', 
+      day: 'numeric', 
+      month: 'short' 
+    });
+  };
+
+  /** Navigate to previous day */
+  const goToPreviousDay = () => {
+    if (selectedDate) {
+      const newDate = new Date(selectedDate);
+      newDate.setDate(newDate.getDate() - 1);
+      setSelectedDate(newDate);
+    }
+  };
+
+  /** Navigate to next day */
+  const goToNextDay = () => {
+    if (selectedDate) {
+      const newDate = new Date(selectedDate);
+      newDate.setDate(newDate.getDate() + 1);
+      setSelectedDate(newDate);
+    }
+  };
+
+  /** Navigate to previous day in edit dialog */
+  const goToPreviousEditDay = () => {
+    if (editDate) {
+      const newDate = new Date(editDate);
+      newDate.setDate(newDate.getDate() - 1);
+      console.log('Previous day clicked - changing from', editDate.toISOString(), 'to', newDate.toISOString());
+      setEditDate(newDate);
+    }
+  };
+
+  /** Navigate to next day in edit dialog */
+  const goToNextEditDay = () => {
+    if (editDate) {
+      const newDate = new Date(editDate);
+      newDate.setDate(newDate.getDate() + 1);
+      console.log('Next day clicked - changing from', editDate.toISOString(), 'to', newDate.toISOString());
+      setEditDate(newDate);
+    }
+  };
+
   /** Format money to Euro display */
   const formatMoneyToDisplay = (amount: number) => {
     return new Intl.NumberFormat('nl-NL', {
@@ -626,6 +674,7 @@ const TimeTracking: React.FC = () => {
     setEditEnd(entry.end_time ? entry.end_time.slice(0, 5) : '');
     setEditServiceId(entry.service_id ? entry.service_id.toString() : 'none');
     setEditComment(entry.comment || ''); // Set comment field
+    setEditDate(new Date(entry.date)); // Set edit date
     
     // Load services for this project
     try {
@@ -669,8 +718,24 @@ const TimeTracking: React.FC = () => {
         end_time: `${endTime}:00`,
         comment: comment || null,
       } as any;
-      await brain.create_time_entry(payload);
-      toast.success('Time entry created');
+      try {
+        await brain.create_time_entry(payload);
+        toast.success('Time entry created');
+      } catch (createError: any) {
+        console.error('Error creating time entry:', createError);
+        console.error('Create error status:', createError.status);
+        console.error('Create error response:', createError.response);
+        console.error('Create error message:', createError.message);
+        
+        // Always show a toast for debugging
+        toast.error('DEBUG: Error caught in create time entry');
+        
+        if (createError.status === 400) {
+          toast.error('Cannot create time entry: There is already a time entry at this date and time. Please choose a different time or date.');
+          return;
+        }
+        throw createError; // Re-throw if it's not a conflict error
+      }
       setIsEntryDialogOpen(false);
       const res = await brain.list_time_entries({ start_date: toISODate(weekStart), end_date: toISODate(weekEnd) });
       const data = await res.json();
@@ -696,41 +761,164 @@ const TimeTracking: React.FC = () => {
 
   /** Update/Delete */
   const handleUpdateEntry = async () => {
-    if (!editingEntry) return;
+    if (!editingEntry || !editDate) return;
     const s = timeToMinutes(editStart);
     const e = timeToMinutes(editEnd);
     if (s == null || e == null || e <= s) return toast.error('Select a valid start and end time');
     const hours = minutesToHours(e - s);
     try {
       setIsLoading(true);
-      const updatePayload = { 
-        hours_worked: hours, 
-        start_time: `${editStart}:00`, 
-        end_time: `${editEnd}:00`,
-        service_id: editServiceId === 'none' ? null : parseInt(editServiceId),
-        comment: editComment || null, // Include comment in update
-      };
-      await brain.update_time_entry(
-        { entryId: editingEntry.id }, 
-        updatePayload
-      );
+      
+      // Check if the date has changed
+      const originalDate = editingEntry.date;
+      const newDate = toISODate(editDate);
+      const dateChanged = originalDate !== newDate;
+      
+      console.log('Date change check:', { originalDate, newDate, dateChanged });
+      
+      if (dateChanged) {
+        // If date changed, create new entry and delete old one
+        console.log('Date changed - using create + delete approach');
+        
+        // Create new entry with new date
+        const createPayload = {
+          company_id: editingEntry.company_id,
+          project_id: editingEntry.project_id,
+          service_id: editServiceId === 'none' ? null : parseInt(editServiceId),
+          date: newDate as any,
+          hours_worked: hours as any,
+          start_time: `${editStart}:00`,
+          end_time: `${editEnd}:00`,
+          comment: editComment || null,
+        };
+        
+        console.log('Creating new entry with payload:', createPayload);
+        try {
+          await brain.create_time_entry(createPayload);
+          
+          // Delete old entry only if creation was successful
+          console.log('Deleting old entry:', editingEntry.id);
+          await brain.delete_time_entry({ entryId: editingEntry.id });
+        } catch (createError: any) {
+          console.error('Error creating new entry:', createError);
+          console.error('Error status:', createError.status);
+          console.error('Error response:', createError.response);
+          console.error('Error message:', createError.message);
+          
+          // Always show a toast for debugging
+          toast.error('DEBUG: Error caught in create new entry');
+          
+          if (createError.status === 400) {
+            toast.error('Cannot move time entry: There is already a time entry at this date and time. Please choose a different time or date.');
+            return;
+          }
+          
+          // Fallback: show generic error message
+          toast.error('Error moving time entry. Please try again or choose a different time/date.');
+          return;
+        }
+        
+      } else {
+        // If date didn't change, use normal update
+        console.log('Date unchanged - using normal update');
+        const updatePayload = { 
+          hours_worked: hours, 
+          start_time: `${editStart}:00`, 
+          end_time: `${editEnd}:00`,
+          service_id: editServiceId === 'none' ? null : parseInt(editServiceId),
+          comment: editComment || null,
+        };
+        
+        console.log('Updating time entry with payload:', updatePayload);
+        try {
+          await brain.update_time_entry(
+            { entryId: editingEntry.id }, 
+            updatePayload
+          );
+        } catch (updateError: any) {
+          console.error('Error updating entry:', updateError);
+          console.error('Update error status:', updateError.status);
+          console.error('Update error response:', updateError.response);
+          console.error('Update error message:', updateError.message);
+          
+          // Always show a toast for debugging
+          toast.error('DEBUG: Error caught in update entry');
+          
+          if (updateError.status === 400) {
+            toast.error('Cannot update time entry: There is already a time entry at this time. Please choose a different time.');
+            return;
+          }
+          throw updateError; // Re-throw if it's not a conflict error
+        }
+      }
       toast.success('Time entry updated');
       setIsEditDialogOpen(false);
       setEditingEntry(null);
-      const res = await brain.list_time_entries({ start_date: toISODate(weekStart), end_date: toISODate(weekEnd) });
-      const data = await res.json();
-      setTimeEntries(data.time_entries || []);
-      const days: CalendarDay[] = daysOfWeek.map((d) => {
-        const iso = toISODate(d);
-        const entries = (data.time_entries || [])
-          .filter((e: TimeEntryResponse) => e.date === iso)
-          .sort((a: TimeEntryResponse, b: TimeEntryResponse) =>
-            (a.start_time || '99:99:99').localeCompare(b.start_time || '99:99:99'),
-          );
-        const total = entries.reduce((s: number, e: TimeEntryResponse) => s + (e.hours_worked || 0), 0);
-        return { date: d, timeEntries: entries, totalHours: total };
-      });
-      setCalendarDays(days);
+      
+      // Check if the new date is in the current week view
+      const newDateISO = toISODate(editDate);
+      const isInCurrentWeek = editDate >= weekStart && editDate <= weekEnd;
+      
+      if (isInCurrentWeek) {
+        // If the new date is in the current week, refresh the current week data
+        console.log('Same week update - refreshing calendar data');
+        console.log('New date:', newDateISO, 'Week range:', toISODate(weekStart), 'to', toISODate(weekEnd));
+        
+        // Add a delay to ensure the server has processed the update
+        await new Promise(resolve => setTimeout(resolve, 500));
+        
+        const res = await brain.list_time_entries({ 
+          start_date: toISODate(weekStart), 
+          end_date: toISODate(weekEnd),
+          _t: Date.now() // Cache busting parameter
+        });
+        const data = await res.json();
+        console.log('Refreshed time entries:', data.time_entries?.length, 'entries');
+        console.log('All entries after update:', data.time_entries?.map(e => ({ id: e.id, date: e.date, start_time: e.start_time })));
+        
+        setTimeEntries(data.time_entries || []);
+        const days: CalendarDay[] = daysOfWeek.map((d) => {
+          const iso = toISODate(d);
+          const entries = (data.time_entries || [])
+            .filter((e: TimeEntryResponse) => e.date === iso)
+            .sort((a: TimeEntryResponse, b: TimeEntryResponse) =>
+              (a.start_time || '99:99:99').localeCompare(b.start_time || '99:99:99'),
+            );
+          const total = entries.reduce((s: number, e: TimeEntryResponse) => s + (e.hours_worked || 0), 0);
+          console.log(`Day ${iso}: ${entries.length} entries, ${total}h total`);
+          return { date: d, timeEntries: entries, totalHours: total };
+        });
+        setCalendarDays(days);
+      } else {
+        // If the new date is outside the current week, navigate to that week
+        toast.info(`Time entry moved to ${editDate.toLocaleDateString('nl-NL')}. Navigating to that week...`);
+        
+        // Calculate the week containing the new date
+        const newWeekStart = startOfWeek(editDate);
+        const newWeekEnd = addDays(newWeekStart, 6);
+        
+        // Update the anchor date to the new week
+        setAnchorDate(newWeekStart);
+        
+        // Load the new week's data
+        const res = await brain.list_time_entries({ start_date: toISODate(newWeekStart), end_date: toISODate(newWeekEnd) });
+        const data = await res.json();
+        setTimeEntries(data.time_entries || []);
+        
+        // Calculate the new week's days
+        const newDaysOfWeek = Array.from({ length: 7 }, (_, i) => addDays(newWeekStart, i));
+        const days: CalendarDay[] = newDaysOfWeek.map((d) => {
+          const iso = toISODate(d);
+          const entries = (data.time_entries || [])
+            .filter((e: TimeEntryResponse) => e.date === iso)
+            .sort((a: TimeEntryResponse, b: TimeEntryResponse) =>
+              (a.start_time || '99:99:99').localeCompare(b.start_time || '99:99:99'),
+            );
+          const total = entries.reduce((s: number, e: TimeEntryResponse) => s + (e.hours_worked || 0), 0);
+          return { date: d, timeEntries: entries, totalHours: total };
+        });
+        setCalendarDays(days);
+      }
     } catch (err: any) {
       console.error(err);
       toast.error(err?.detail || 'Failed to update time entry');
@@ -1649,15 +1837,15 @@ const TimeTracking: React.FC = () => {
               <Button variant="outline" size="sm" onClick={goToCurrentWeek} className="text-xs lg:text-sm">
                 Huidige week
               </Button>
-              <Button variant="outline" size="sm" className="p-2 lg:hidden" onClick={() => setShowCalendar(!showCalendar)}>
+              <Button variant="outline" size="sm" className="p-2" onClick={() => setShowCalendar(!showCalendar)}>
                 <CalendarIcon className="h-4 w-4" />
               </Button>
             </div>
           </div>
 
-          {/* Desktop Calendar Card - Hidden on mobile */}
+          {/* Calendar Card */}
           {showCalendar && (
-            <Card className="mb-4 flex-shrink-0 hidden lg:block">
+            <Card className="mb-4 flex-shrink-0">
               <CardContent className="p-3">
                 <Calendar
                   mode="single"
@@ -1849,14 +2037,49 @@ const TimeTracking: React.FC = () => {
               </Select>
             </div>
 
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <Label>Start</Label>
-                <Input type="time" value={startTime} onChange={(e) => setStartTime(e.target.value)} />
-              </div>
-              <div>
-                <Label>Einde</Label>
-                <Input type="time" value={endTime} onChange={(e) => setEndTime(e.target.value)} />
+            <div className="flex gap-3">
+              {/* Date Switcher - 50% width */}
+              {selectedDate && (
+                <div className="flex-1">
+                  <Label>Datum</Label>
+                  <div className="flex items-center bg-gray-50 rounded-lg border border-gray-200">
+                    <button
+                      onClick={goToPreviousDay}
+                      className="p-2 hover:bg-gray-200 rounded-l-lg transition-colors"
+                      type="button"
+                    >
+                      <ChevronLeft className="h-4 w-4 text-gray-600" />
+                    </button>
+                    <div className="flex items-center justify-center space-x-2 flex-1 px-3 py-2">
+                      <CalendarIcon className="h-4 w-4 text-gray-600" />
+                      <span className="text-sm font-medium text-gray-900">
+                        {formatDateForSwitcher(selectedDate)}
+                      </span>
+                    </div>
+                    <button
+                      onClick={goToNextDay}
+                      className="p-2 hover:bg-gray-200 rounded-r-lg transition-colors"
+                      type="button"
+                    >
+                      <ChevronRight className="h-4 w-4 text-gray-600" />
+                    </button>
+                  </div>
+                </div>
+              )}
+              
+              {/* Time Fields - 50% width total (25% each) */}
+              <div className="flex-1 grid grid-cols-2 gap-3">
+                {/* Start Time */}
+                <div>
+                  <Label>Starttijd</Label>
+                  <Input type="time" value={startTime} onChange={(e) => setStartTime(e.target.value)} />
+                </div>
+                
+                {/* End Time */}
+                <div>
+                  <Label>Eindtijd</Label>
+                  <Input type="time" value={endTime} onChange={(e) => setEndTime(e.target.value)} />
+                </div>
               </div>
             </div>
 
@@ -1881,12 +2104,18 @@ const TimeTracking: React.FC = () => {
               const key = `service-${service.id}`;
               const calculations = budgetCalculations[key] || { workedHours: 0, plannedHours: 0, isLoading: false };
               
-              const budget = formatHoursToHM(service.budget_hours);
+              // Check if this service has unlimited hours
+              const projectCompany = availableHours.find(ah => 
+                ah.company_id === service.company_id && ah.project_id === service.project_id
+              );
+              const hasUnlimitedHours = projectCompany?.unlimited_hours || false;
+              
+              const budget = hasUnlimitedHours ? '∞' : formatHoursToHM(service.budget_hours);
               const spent = formatHoursToHM(calculations.workedHours);
               const planned = formatHoursToHM(calculations.plannedHours);
               const totalUsed = calculations.workedHours + calculations.plannedHours;
-              const remaining = formatHoursToHM(service.budget_hours - totalUsed);
-              const isOverBudget = (service.budget_hours - totalUsed) < 0;
+              const remaining = hasUnlimitedHours ? '∞' : formatHoursToHM(service.budget_hours - totalUsed);
+              const isOverBudget = !hasUnlimitedHours && (service.budget_hours - totalUsed) < 0;
               
               return (
                 <div className="bg-gray-50 rounded-lg p-4">
@@ -1938,11 +2167,6 @@ const TimeTracking: React.FC = () => {
             <DialogTitle className="flex items-center gap-2">
               <Pencil className="h-5 w-5" /> Uren bewerken
             </DialogTitle>
-            {editingEntry && (
-              <p className="text-sm text-gray-600">
-                {new Date(editingEntry.date).toLocaleDateString('nl-NL', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}
-              </p>
-            )}
           </DialogHeader>
 
           {editingEntry && (
@@ -1984,14 +2208,49 @@ const TimeTracking: React.FC = () => {
                 />
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <Label>Start</Label>
-                  <Input type="time" value={editStart} onChange={(e) => setEditStart(e.target.value)} />
-                </div>
-                <div>
-                  <Label>Einde</Label>
-                  <Input type="time" value={editEnd} onChange={(e) => setEditEnd(e.target.value)} />
+              <div className="flex gap-3">
+                {/* Date Switcher - 50% width */}
+                {editDate && (
+                  <div className="flex-1">
+                    <Label>Datum</Label>
+                    <div className="flex items-center bg-gray-50 rounded-lg border border-gray-200">
+                      <button
+                        onClick={goToPreviousEditDay}
+                        className="p-2 hover:bg-gray-200 rounded-l-lg transition-colors"
+                        type="button"
+                      >
+                        <ChevronLeft className="h-4 w-4 text-gray-600" />
+                      </button>
+                      <div className="flex items-center justify-center space-x-2 flex-1 px-3 py-2">
+                        <CalendarIcon className="h-4 w-4 text-gray-600" />
+                        <span className="text-sm font-medium text-gray-900">
+                          {formatDateForSwitcher(editDate)}
+                        </span>
+                      </div>
+                      <button
+                        onClick={goToNextEditDay}
+                        className="p-2 hover:bg-gray-200 rounded-r-lg transition-colors"
+                        type="button"
+                      >
+                        <ChevronRight className="h-4 w-4 text-gray-600" />
+                      </button>
+                    </div>
+                  </div>
+                )}
+                
+                {/* Time Fields - 50% width total (25% each) */}
+                <div className="flex-1 grid grid-cols-2 gap-3">
+                  {/* Start Time */}
+                  <div>
+                    <Label>Starttijd</Label>
+                    <Input type="time" value={editStart} onChange={(e) => setEditStart(e.target.value)} />
+                  </div>
+                  
+                  {/* End Time */}
+                  <div>
+                    <Label>Eindtijd</Label>
+                    <Input type="time" value={editEnd} onChange={(e) => setEditEnd(e.target.value)} />
+                  </div>
                 </div>
               </div>
               <p className="text-sm text-gray-600">Uren: <span className="font-medium">{editHours}</span></p>
@@ -2005,12 +2264,18 @@ const TimeTracking: React.FC = () => {
                 const key = `service-${service.id}`;
                 const calculations = budgetCalculations[key] || { workedHours: 0, plannedHours: 0, isLoading: false };
                 
-                const budget = formatHoursToHM(service.budget_hours);
+                // Check if this service has unlimited hours
+                const projectCompany = availableHours.find(ah => 
+                  ah.company_id === service.company_id && ah.project_id === service.project_id
+                );
+                const hasUnlimitedHours = projectCompany?.unlimited_hours || false;
+                
+                const budget = hasUnlimitedHours ? '∞' : formatHoursToHM(service.budget_hours);
                 const spent = formatHoursToHM(calculations.workedHours);
                 const planned = formatHoursToHM(calculations.plannedHours);
                 const totalUsed = calculations.workedHours + calculations.plannedHours;
-                const remaining = formatHoursToHM(service.budget_hours - totalUsed);
-                const isOverBudget = (service.budget_hours - totalUsed) < 0;
+                const remaining = hasUnlimitedHours ? '∞' : formatHoursToHM(service.budget_hours - totalUsed);
+                const isOverBudget = !hasUnlimitedHours && (service.budget_hours - totalUsed) < 0;
                 
                 return (
                   <div className="bg-gray-50 rounded-lg p-4">
