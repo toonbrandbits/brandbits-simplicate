@@ -441,7 +441,5 @@
     "typescript-language-server": "4.3.2",
     "vite": "4.4.5",
     "vite-tsconfig-paths": "4.2.2"
-  },
-  "packageManager": "yarn@4.9.2",
-  "nodeLinker": "pnpm"
+  }
 }
