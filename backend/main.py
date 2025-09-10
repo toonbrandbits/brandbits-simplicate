@@ -108,7 +108,27 @@ def get_firebase_config() -> dict | None:
 
 def create_app() -> FastAPI:
     """Create the app. This is called by uvicorn with the factory option to construct the app object."""
-    app = FastAPI()
+    app = FastAPI(
+        title="Brandbits Time Tracking API",
+        description="API for time tracking application",
+        version="1.0.0"
+    )
+    
+    # Add a root route to provide API information
+    @app.get("/")
+    async def root():
+        return {
+            "message": "Brandbits Time Tracking API",
+            "version": "1.0.0",
+            "docs": "/docs",
+            "available_routes": [
+                "/routes/time-entries",
+                "/routes/projects", 
+                "/routes/companies",
+                "/routes/services"
+            ]
+        }
+    
     app.include_router(import_api_routers())
 
     for route in app.routes:
