@@ -46,9 +46,9 @@ const getExtensionConfig = (name: string): string => {
 const getCustomStackAuthConfig = (): string => {
 	// Check if custom StackAuth environment variables are set
 	const customConfig = {
-		projectId: process.env.STACK_AUTH_PROJECT_ID || "",
-		jwksUrl: process.env.STACK_AUTH_JWKS_URL || "",
-		publishableClientKey: process.env.STACK_AUTH_PUBLISHABLE_CLIENT_KEY || "",
+		projectId: process.env.STACK_AUTH_PROJECT_ID || "c1ede18c-21ff-4d6c-8748-f0c50b0c5b2b",
+		jwksUrl: process.env.STACK_AUTH_JWKS_URL || "https://api.stack-auth.com/api/v1/projects/c1ede18c-21ff-4d6c-8748-f0c50b0c5b2b/.well-known/jwks.json",
+		publishableClientKey: process.env.STACK_AUTH_PUBLISHABLE_CLIENT_KEY || "pck_3wm9gvmp47hs0j0sp791b2zqpa9gxtwcjdpxvhqe8kgj0",
 		handlerUrl: process.env.STACK_AUTH_HANDLER_URL || "auth"
 	};
 
