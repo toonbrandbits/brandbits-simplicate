@@ -3,6 +3,7 @@ import pathlib
 import json
 import dotenv
 from fastapi import FastAPI, APIRouter, Depends
+from fastapi.middleware.cors import CORSMiddleware
 
 dotenv.load_dotenv()
 
@@ -114,6 +115,15 @@ def create_app() -> FastAPI:
         version="1.0.0"
     )
     
+    # Add CORS middleware
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["https://brandbits-simplicate-frontend.onrender.com", "http://localhost:5173"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+    
     # Add a root route to provide API information
     @app.get("/")
     async def root():
@@ -128,6 +138,11 @@ def create_app() -> FastAPI:
                 "/routes/services"
             ]
         }
+    
+    # Add health check endpoint
+    @app.get("/health")
+    async def health():
+        return {"status": "healthy"}
     
     app.include_router(import_api_routers())
 
