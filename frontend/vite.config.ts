@@ -105,6 +105,14 @@ const buildVariables = () => {
 export default defineConfig({
 	define: buildVariables(),
 	plugins: [react(), splitVendorChunkPlugin(), tsConfigPaths(), injectHTML()],
+	build: {
+		outDir: "dist",
+		rollupOptions: {
+			output: {
+				manualChunks: undefined,
+			},
+		},
+	},
 	server: {
 		proxy: {
 			"/routes": {
